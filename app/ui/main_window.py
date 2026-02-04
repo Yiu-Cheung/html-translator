@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QComboBox, QPushButton, QTreeWidget, QTreeWidgetItem,
     QTextEdit, QProgressBar, QFileDialog, QMessageBox,
     QGroupBox, QFrame, QToolBar, QSizePolicy, QCheckBox,
-    QLineEdit, QListWidget, QListWidgetItem, QAbstractItemView, QSpinBox
+    QLineEdit, QListWidget, QListWidgetItem, QAbstractItemView, QSpinBox,
+    QTabWidget
 )
 from PySide6.QtCore import Qt, Signal, Slot, QThread, QMutex, QMutexLocker, QMetaObject, Q_ARG
 from PySide6.QtGui import QAction, QFont, QColor, QTextCharFormat, QSyntaxHighlighter
@@ -431,13 +432,8 @@ class MainWindow(QMainWindow):
         # Set splitter sizes
         self.main_splitter.setSizes(self.config.splitter_sizes)
 
-    def create_left_panel(self) -> QWidget:
-        """Create the left panel with project and file controls"""
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # Project selection
+    def _create_project_group(self) -> QGroupBox:
+        """Create the project selection group"""
         project_group = QGroupBox('Project')
         project_layout = QVBoxLayout(project_group)
 
@@ -445,9 +441,131 @@ class MainWindow(QMainWindow):
         self.project_combo.currentTextChanged.connect(self.on_project_changed)
         project_layout.addWidget(self.project_combo)
 
+        return project_group
+
+    def _create_language_group(self) -> QGroupBox:
+        """Create the target language selection group"""
+        lang_group = QGroupBox('Target Language')
+        lang_layout = QVBoxLayout(lang_group)
+
+        self.lang_combo = QComboBox()
+        for code, name in SUPPORTED_LANGUAGES.items():
+            self.lang_combo.addItem(f'{name} ({code})', code)
+
+        # Set from config, fallback to zh-TW if saved value doesn't exist
+        saved_lang = self.config.target_lang
+        # Handle legacy 'zh' -> 'zh-TW' migration
+        if saved_lang == 'zh':
+            saved_lang = 'zh-TW'
+            self.config.target_lang = 'zh-TW'
+            self.config.save()
+
+        # Block signals while setting initial value to avoid premature save
+        self.lang_combo.blockSignals(True)
+
+        # Find and set the index for the saved language
+        for i in range(self.lang_combo.count()):
+            if self.lang_combo.itemData(i) == saved_lang:
+                self.lang_combo.setCurrentIndex(i)
+                break
+
+        self.lang_combo.blockSignals(False)
+
+        # Connect signal after setting initial value
+        self.lang_combo.currentIndexChanged.connect(self.on_target_lang_changed)
+        print(f'[UI] Language combo signal connected. Current: {self.lang_combo.currentData()}')
+        lang_layout.addWidget(self.lang_combo)
+
+        return lang_group
+
+    def _create_model_group(self) -> QGroupBox:
+        """Create the AI model selection group"""
+        model_group = QGroupBox('AI Model')
+        model_layout = QVBoxLayout(model_group)
+
+        self.model_combo = QComboBox()
+        self.model_combo.currentTextChanged.connect(self.on_model_changed)
+        model_layout.addWidget(self.model_combo)
+
+        self.btn_refresh_models = QPushButton('Refresh Models')
+        self.btn_refresh_models.clicked.connect(self.refresh_models)
+        model_layout.addWidget(self.btn_refresh_models)
+
+        return model_group
+
+    def _create_translation_controls_group(self) -> QGroupBox:
+        """Create the translation controls group"""
+        control_group = QGroupBox('Translation')
+        control_layout = QVBoxLayout(control_group)
+
+        # Split translate buttons
+        translate_btn_layout = QHBoxLayout()
+
+        self.btn_translate_rest = QPushButton('Translate Rest')
+        self.btn_translate_rest.setStyleSheet('font-weight: bold; padding: 10px;')
+        self.btn_translate_rest.clicked.connect(self.start_translation_rest)
+        self.btn_translate_rest.setToolTip('Translate only files that have not been translated yet')
+        translate_btn_layout.addWidget(self.btn_translate_rest)
+
+        self.btn_retranslate_all = QPushButton('Re-Translate All')
+        self.btn_retranslate_all.setStyleSheet('font-weight: bold; padding: 10px;')
+        self.btn_retranslate_all.clicked.connect(self.start_retranslate_all)
+        self.btn_retranslate_all.setToolTip('Re-translate all files (optionally clear existing translations)')
+        translate_btn_layout.addWidget(self.btn_retranslate_all)
+
+        control_layout.addLayout(translate_btn_layout)
+
+        self.btn_stop = QPushButton('Stop')
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_translation)
+        control_layout.addWidget(self.btn_stop)
+
+        # Auto-refresh preview toggle
+        self.chk_auto_refresh = QCheckBox('Auto-refresh Preview')
+        self.chk_auto_refresh.setChecked(self.config.auto_refresh_preview)
+        self.chk_auto_refresh.stateChanged.connect(self.on_auto_refresh_changed)
+        control_layout.addWidget(self.chk_auto_refresh)
+
+        return control_group
+
+    def _create_files_tab(self) -> QWidget:
+        """Create the Files tab containing the file trees group"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Add the files group
+        files_group = self._create_files_group()
+        layout.addWidget(files_group)
+
+        return tab
+
+    def _create_project_tab(self) -> QWidget:
+        """Create the Project tab containing configuration groups"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Add all configuration groups
+        project_group = self._create_project_group()
         layout.addWidget(project_group)
 
-        # File trees (dynamic height - uses remaining space)
+        lang_group = self._create_language_group()
+        layout.addWidget(lang_group)
+
+        glossary_group = self._create_glossary_group()
+        layout.addWidget(glossary_group)
+
+        model_group = self._create_model_group()
+        layout.addWidget(model_group)
+
+        # Add stretch to push groups to top
+        layout.addStretch()
+
+        return tab
+
+    def _create_files_group(self) -> QGroupBox:
+        """Create the file trees group with source and translated trees"""
         trees_group = QGroupBox('Files')
         trees_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         trees_layout = QVBoxLayout(trees_group)
@@ -522,43 +640,10 @@ class MainWindow(QMainWindow):
 
         trees_layout.addLayout(btn_layout)
 
-        layout.addWidget(trees_group)
+        return trees_group
 
-        # Target language
-        lang_group = QGroupBox('Target Language')
-        lang_layout = QVBoxLayout(lang_group)
-
-        self.lang_combo = QComboBox()
-        for code, name in SUPPORTED_LANGUAGES.items():
-            self.lang_combo.addItem(f'{name} ({code})', code)
-
-        # Set from config, fallback to zh-TW if saved value doesn't exist
-        saved_lang = self.config.target_lang
-        # Handle legacy 'zh' -> 'zh-TW' migration
-        if saved_lang == 'zh':
-            saved_lang = 'zh-TW'
-            self.config.target_lang = 'zh-TW'
-            self.config.save()
-
-        # Block signals while setting initial value to avoid premature save
-        self.lang_combo.blockSignals(True)
-
-        # Find and set the index for the saved language
-        for i in range(self.lang_combo.count()):
-            if self.lang_combo.itemData(i) == saved_lang:
-                self.lang_combo.setCurrentIndex(i)
-                break
-
-        self.lang_combo.blockSignals(False)
-
-        # Connect signal after setting initial value
-        self.lang_combo.currentIndexChanged.connect(self.on_target_lang_changed)
-        print(f'[UI] Language combo signal connected. Current: {self.lang_combo.currentData()}')
-        lang_layout.addWidget(self.lang_combo)
-
-        layout.addWidget(lang_group)
-
-        # Glossary info (moved under Target Language)
+    def _create_glossary_group(self) -> QGroupBox:
+        """Create the glossary configuration group"""
         glossary_group = QGroupBox('Glossary')
         glossary_layout = QVBoxLayout(glossary_group)
 
@@ -627,54 +712,37 @@ class MainWindow(QMainWindow):
 
         glossary_layout.addLayout(worker_layout)
 
-        layout.addWidget(glossary_group)
+        return glossary_group
 
-        # Model selection
-        model_group = QGroupBox('AI Model')
-        model_layout = QVBoxLayout(model_group)
+    def create_left_panel(self) -> QWidget:
+        """Create the left panel with tabbed interface for files and project settings
 
-        self.model_combo = QComboBox()
-        self.model_combo.currentTextChanged.connect(self.on_model_changed)
-        model_layout.addWidget(self.model_combo)
+        Layout structure:
+        - QTabWidget (expands to fill available space)
+          - Files tab: Source/translated file trees and selection buttons
+          - Project tab: Project settings (project, language, glossary, AI model)
+        - Translation controls (fixed at bottom, always visible)
+        """
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        self.btn_refresh_models = QPushButton('Refresh Models')
-        self.btn_refresh_models.clicked.connect(self.refresh_models)
-        model_layout.addWidget(self.btn_refresh_models)
+        # Create tab widget for Files and Project settings
+        tab_widget = QTabWidget()
 
-        layout.addWidget(model_group)
+        # Files tab: File management (source/translated trees, buttons)
+        files_tab = self._create_files_tab()
+        tab_widget.addTab(files_tab, "Files")
 
-        # Translation controls
-        control_group = QGroupBox('Translation')
-        control_layout = QVBoxLayout(control_group)
+        # Project tab: All configuration (project, language, glossary, model)
+        project_tab = self._create_project_tab()
+        tab_widget.addTab(project_tab, "Project")
 
-        # Split translate buttons
-        translate_btn_layout = QHBoxLayout()
+        # Tab widget expands to fill available vertical space
+        layout.addWidget(tab_widget)
 
-        self.btn_translate_rest = QPushButton('Translate Rest')
-        self.btn_translate_rest.setStyleSheet('font-weight: bold; padding: 10px;')
-        self.btn_translate_rest.clicked.connect(self.start_translation_rest)
-        self.btn_translate_rest.setToolTip('Translate only files that have not been translated yet')
-        translate_btn_layout.addWidget(self.btn_translate_rest)
-
-        self.btn_retranslate_all = QPushButton('Re-Translate All')
-        self.btn_retranslate_all.setStyleSheet('font-weight: bold; padding: 10px;')
-        self.btn_retranslate_all.clicked.connect(self.start_retranslate_all)
-        self.btn_retranslate_all.setToolTip('Re-translate all files (optionally clear existing translations)')
-        translate_btn_layout.addWidget(self.btn_retranslate_all)
-
-        control_layout.addLayout(translate_btn_layout)
-
-        self.btn_stop = QPushButton('Stop')
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self.stop_translation)
-        control_layout.addWidget(self.btn_stop)
-
-        # Auto-refresh preview toggle
-        self.chk_auto_refresh = QCheckBox('Auto-refresh Preview')
-        self.chk_auto_refresh.setChecked(self.config.auto_refresh_preview)
-        self.chk_auto_refresh.stateChanged.connect(self.on_auto_refresh_changed)
-        control_layout.addWidget(self.chk_auto_refresh)
-
+        # Translation controls always visible at bottom (outside tabs)
+        control_group = self._create_translation_controls_group()
         layout.addWidget(control_group)
 
         return panel
