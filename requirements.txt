@@ -1,0 +1,17 @@
+# HTML Translation Dependencies
+
+# HTML parsing
+beautifulsoup4>=4.12.0
+
+# HTTP requests for Ollama API
+requests>=2.31.0
+
+# Desktop UI Framework
+PySide6>=6.6.0
+
+# Syntax highlighting for HTML preview
+Pygments>=2.17.0
+
+# NLP for smart glossary matching (optional but recommended)
+# After installing, download the model: python -m spacy download en_core_web_sm
+spacy>=3.7.0
