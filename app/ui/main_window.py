@@ -917,6 +917,12 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu('&Help')
 
+        user_manual_action = QAction('User Manual', self)
+        user_manual_action.triggered.connect(self.show_user_manual)
+        help_menu.addAction(user_manual_action)
+
+        help_menu.addSeparator()
+
         about_action = QAction('About', self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
@@ -3384,16 +3390,50 @@ class MainWindow(QMainWindow):
 
             self.status_label.setText('Output settings saved')
 
+    def show_user_manual(self):
+        """Show user manual"""
+        import os
+        manual_path = Path(__file__).parent.parent.parent / 'USER_MANUAL.md'
+
+        if manual_path.exists():
+            # Try to open with default system application
+            try:
+                if os.name == 'nt':  # Windows
+                    os.startfile(str(manual_path))
+                elif os.name == 'posix':  # macOS/Linux
+                    import subprocess
+                    subprocess.run(['open' if sys.platform == 'darwin' else 'xdg-open', str(manual_path)])
+            except Exception as e:
+                QMessageBox.information(
+                    self, 'User Manual',
+                    f'User manual is located at:\n{manual_path}\n\n'
+                    f'Please open it with your preferred Markdown viewer.'
+                )
+        else:
+            QMessageBox.warning(
+                self, 'User Manual Not Found',
+                f'User manual not found at:\n{manual_path}\n\n'
+                'Please check the GitHub repository for documentation:\n'
+                'https://github.com/Yiu-Cheung/html-translator'
+            )
+
     def show_about(self):
         """Show about dialog"""
         QMessageBox.about(
             self, 'About HTML Translator',
-            'HTML Translation App\n\n'
+            'HTML Translation App\n'
+            'Version 1.0.0\n\n'
             'Translate HTML files using local Ollama AI.\n\n'
             'Features:\n'
-            '- Project-based glossary and cache\n'
+            '- Project-based glossary management\n'
             '- Side-by-side preview\n'
-            '- Batch translation'
+            '- Batch translation with multi-threading\n'
+            '- Multiple translation modes\n'
+            '- Search and retranslate functionality\n\n'
+            'Author: YiuCheung\n'
+            'Contact: yiumail@gmail.com\n\n'
+            'License: MIT License\n'
+            'GitHub: github.com/Yiu-Cheung/html-translator'
         )
 
     def closeEvent(self, event):
