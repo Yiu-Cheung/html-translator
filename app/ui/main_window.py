@@ -1102,24 +1102,92 @@ class MainWindow(QMainWindow):
         print(f'[UI] Project changed to: {project_name}')
 
         try:
+            # Store old settings to detect if Ollama config changed
+            old_settings = self.project_settings
+
             self.current_project = self.project_manager.load_project(project_name)
             self.config.last_project = project_name
             self.config.save()
             print(f'[UI] Project loaded and saved to config')
 
-            # Initialize translation engine (glossary will be loaded when selected from dropdown)
+            # Check if Ollama connection settings changed (host/port require reconnection)
+            new_settings = self.project_settings
+            ollama_connection_changed = (
+                not old_settings or
+                not self.translation_engine or
+                old_settings.ollama.host != new_settings.ollama.host or
+                old_settings.ollama.port != new_settings.ollama.port
+            )
+
+            # Check if only model changed (can be switched without reconnection)
+            only_model_changed = (
+                old_settings and
+                self.translation_engine and
+                old_settings.ollama.host == new_settings.ollama.host and
+                old_settings.ollama.port == new_settings.ollama.port and
+                old_settings.ollama.model != new_settings.ollama.model
+            )
+
             project_path = self.project_manager.current_project_path
-            self.translation_engine = TranslationEngine({
-                'project_path': str(project_path),
-                'project_name': project_name,
-                'glossary_path': '',  # Will be set when glossary is selected
-                'ollama_host': self.project_settings.ollama.host if self.project_settings else 'localhost',
-                'ollama_port': self.project_settings.ollama.port if self.project_settings else 11434,
-                'ollama_model': self.project_settings.ollama.model if self.project_settings else 'gemma3:4b',
-                'case_sensitive_glossary': self.project_settings.case_sensitive_glossary if self.project_settings else True,
-                'direct_translate_mode': False,  # Deprecated field
-                'translation_mode': self.project_settings.translation_mode if self.project_settings else 'glossary_reference',
-            })
+
+            if ollama_connection_changed:
+                # Ollama connection changed (host/port) - need to recreate engine and reconnect
+                print(f'[UI] Ollama connection changed, reconnecting...')
+                self.translation_engine = TranslationEngine({
+                    'project_path': str(project_path),
+                    'project_name': project_name,
+                    'glossary_path': '',  # Will be set when glossary is selected
+                    'ollama_host': self.project_settings.ollama.host if self.project_settings else 'localhost',
+                    'ollama_port': self.project_settings.ollama.port if self.project_settings else 11434,
+                    'ollama_model': self.project_settings.ollama.model if self.project_settings else 'gemma3:4b',
+                    'case_sensitive_glossary': self.project_settings.case_sensitive_glossary if self.project_settings else True,
+                    'direct_translate_mode': False,  # Deprecated field
+                    'translation_mode': self.project_settings.translation_mode if self.project_settings else 'glossary_reference',
+                })
+
+                # Check Ollama connection, auto-start if needed
+                if self.translation_engine.check_connection():
+                    model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
+                    self.ollama_status.setText(f'Ollama: Connected ({model})')
+                    self.ollama_status.setStyleSheet('color: green;')
+                    # Check and download required models
+                    self.ensure_required_models()
+                else:
+                    # Try to auto-start Ollama
+                    self.ollama_status.setText('Ollama: Starting...')
+                    self.ollama_status.setStyleSheet('color: orange;')
+                    if self.auto_start_ollama():
+                        model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
+                        self.ollama_status.setText(f'Ollama: Connected ({model})')
+                        self.ollama_status.setStyleSheet('color: green;')
+                    else:
+                        self.ollama_status.setText('Ollama: Disconnected')
+                        self.ollama_status.setStyleSheet('color: red;')
+
+                # Refresh available models
+                self.refresh_models()
+            elif only_model_changed:
+                # Only model changed - switch model without reconnection
+                new_model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
+                print(f'[UI] Switching Ollama model to {new_model} (no reconnection needed)')
+                self.translation_engine.provider.set_model(new_model)
+                self.translation_engine.config['ollama_model'] = new_model
+                self.translation_engine.config['project_path'] = str(project_path)
+                self.translation_engine.config['project_name'] = project_name
+                self.translation_engine.config['case_sensitive_glossary'] = self.project_settings.case_sensitive_glossary if self.project_settings else True
+                self.translation_engine.config['translation_mode'] = self.project_settings.translation_mode if self.project_settings else 'glossary_reference'
+
+                # Update UI status
+                self.ollama_status.setText(f'Ollama: Connected ({new_model})')
+                self.ollama_status.setStyleSheet('color: green;')
+            else:
+                # Nothing changed - just update project-specific config
+                print(f'[UI] Ollama settings unchanged, fast switch')
+                if self.translation_engine:
+                    self.translation_engine.config['project_path'] = str(project_path)
+                    self.translation_engine.config['project_name'] = project_name
+                    self.translation_engine.config['case_sensitive_glossary'] = self.project_settings.case_sensitive_glossary if self.project_settings else True
+                    self.translation_engine.config['translation_mode'] = self.project_settings.translation_mode if self.project_settings else 'glossary_reference'
 
             # Update UI
             glossary_count = self.current_project.statistics.glossary_terms
@@ -1128,30 +1196,7 @@ class MainWindow(QMainWindow):
             # Populate glossary dropdown
             self.populate_glossary_combo()
 
-            # Check Ollama connection, auto-start if needed
-            if self.translation_engine.check_connection():
-                model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
-                self.ollama_status.setText(f'Ollama: Connected ({model})')
-                self.ollama_status.setStyleSheet('color: green;')
-                # Check and download required models
-                self.ensure_required_models()
-            else:
-                # Try to auto-start Ollama
-                self.ollama_status.setText('Ollama: Starting...')
-                self.ollama_status.setStyleSheet('color: orange;')
-                if self.auto_start_ollama():
-                    model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
-                    self.ollama_status.setText(f'Ollama: Connected ({model})')
-                    self.ollama_status.setStyleSheet('color: green;')
-                else:
-                    self.ollama_status.setText('Ollama: Disconnected')
-                    self.ollama_status.setStyleSheet('color: red;')
-
-
             self.status_label.setText(f'Loaded project: {project_name}')
-
-            # Refresh available models
-            self.refresh_models()
 
         except Exception as e:
             QMessageBox.critical(self, 'Error', f'Failed to load project: {e}')
