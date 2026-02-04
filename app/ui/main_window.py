@@ -372,7 +372,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig):
         super().__init__()
         self.config = config
-        self.project_manager = ProjectManager(config.projects_dir)
+        self.project_manager = ProjectManager(config.projects_dir, app_config=config)
         self.current_project: Optional[Project] = None
         self.translation_engine: Optional[TranslationEngine] = None
         self.worker: Optional[TranslationWorker] = None
@@ -393,9 +393,14 @@ class MainWindow(QMainWindow):
         self.setup_status_bar()
         self.load_last_project()
 
+    @property
+    def project_settings(self):
+        """Helper property to access current project settings"""
+        return self.project_manager.current_settings
+
         # Auto-load last input directory if it exists
-        if self.config.last_input_dir:
-            last_dir = Path(self.config.last_input_dir)
+        if self.project_settings and self.project_settings.last_input_dir:
+            last_dir = Path(self.project_settings.last_input_dir)
             if last_dir.exists() and last_dir.is_dir():
                 print(f'[UI] Auto-loading last input directory: {last_dir}')
                 self.load_folder(str(last_dir))
@@ -452,13 +457,14 @@ class MainWindow(QMainWindow):
         for code, name in SUPPORTED_LANGUAGES.items():
             self.lang_combo.addItem(f'{name} ({code})', code)
 
-        # Set from config, fallback to zh-TW if saved value doesn't exist
-        saved_lang = self.config.target_lang
+        # Set from project settings, fallback to zh-TW if saved value doesn't exist
+        saved_lang = self.project_settings.target_lang if self.project_settings else 'zh-TW'
         # Handle legacy 'zh' -> 'zh-TW' migration
         if saved_lang == 'zh':
             saved_lang = 'zh-TW'
-            self.config.target_lang = 'zh-TW'
-            self.config.save()
+            if self.project_settings:
+                self.project_settings.target_lang = 'zh-TW'
+                self.project_manager.save_project_settings()
 
         # Block signals while setting initial value to avoid premature save
         self.lang_combo.blockSignals(True)
@@ -522,7 +528,7 @@ class MainWindow(QMainWindow):
 
         # Auto-refresh preview toggle
         self.chk_auto_refresh = QCheckBox('Auto-refresh Preview')
-        self.chk_auto_refresh.setChecked(self.config.auto_refresh_preview)
+        self.chk_auto_refresh.setChecked(self.project_settings.auto_refresh_preview if self.project_settings else True)
         self.chk_auto_refresh.stateChanged.connect(self.on_auto_refresh_changed)
         control_layout.addWidget(self.chk_auto_refresh)
 
@@ -665,7 +671,7 @@ class MainWindow(QMainWindow):
         glossary_layout.addLayout(glossary_select_layout)
 
         self.chk_case_sensitive = QCheckBox('Case Sensitive')
-        self.chk_case_sensitive.setChecked(self.config.case_sensitive_glossary)
+        self.chk_case_sensitive.setChecked(self.project_settings.case_sensitive_glossary if self.project_settings else True)
         self.chk_case_sensitive.stateChanged.connect(self.on_case_sensitive_changed)
         glossary_layout.addWidget(self.chk_case_sensitive)
 
@@ -684,9 +690,8 @@ class MainWindow(QMainWindow):
             'Full Context Reference: Include full glossary in prompt'
         )
         # Set current mode (default to glossary_reference)
-        current_mode = getattr(self.config, 'translation_mode', 'glossary_reference')
-        if current_mode == 'full_context' or getattr(self.config, 'direct_translate_mode', False):
-            current_mode = 'full_context'
+        current_mode = self.project_settings.translation_mode if self.project_settings else 'glossary_reference'
+        # No need to check direct_translate_mode anymore as it's deprecated
         index = self.mode_combo.findData(current_mode)
         if index >= 0:
             self.mode_combo.setCurrentIndex(index)
@@ -704,7 +709,7 @@ class MainWindow(QMainWindow):
         self.worker_spinbox = QSpinBox()
         self.worker_spinbox.setMinimum(1)
         self.worker_spinbox.setMaximum(10)
-        self.worker_spinbox.setValue(self.config.worker_count)
+        self.worker_spinbox.setValue(self.project_settings.worker_count if self.project_settings else 3)
         self.worker_spinbox.setToolTip('Number of parallel translation workers (1-10)')
         self.worker_spinbox.valueChanged.connect(self.on_worker_count_changed)
         worker_layout.addWidget(self.worker_spinbox)
@@ -1028,18 +1033,21 @@ class MainWindow(QMainWindow):
 
         # Start with base output directory
         # Use custom output root if set, otherwise use default 'output' folder
-        if self.config.custom_output_root and self.config.custom_output_root.strip():
-            output_dir = Path(self.config.custom_output_root)
+        custom_root = self.project_settings.custom_output_root if self.project_settings else ''
+        if custom_root and custom_root.strip():
+            output_dir = Path(custom_root)
         else:
             app_dir = Path(__file__).parent.parent
             output_dir = app_dir / 'output'
 
         # Add language code folder if enabled
-        if self.config.include_lang_code_folder:
+        include_lang_folder = self.project_settings.include_lang_code_folder if self.project_settings else True
+        if include_lang_folder:
             output_dir = output_dir / target_lang
 
         # Add source folder name if enabled and requested
-        if include_source_folder and self.config.include_parent_folder:
+        include_parent = self.project_settings.include_parent_folder if self.project_settings else True
+        if include_source_folder and include_parent:
             if self.file_tree.topLevelItemCount() > 0:
                 first_item = self.file_tree.topLevelItem(0)
                 input_base = first_item.data(0, Qt.UserRole)
@@ -1105,12 +1113,12 @@ class MainWindow(QMainWindow):
                 'project_path': str(project_path),
                 'project_name': project_name,
                 'glossary_path': '',  # Will be set when glossary is selected
-                'ollama_host': self.config.ollama.host,
-                'ollama_port': self.config.ollama.port,
-                'ollama_model': self.config.ollama.model,
-                'case_sensitive_glossary': self.config.case_sensitive_glossary,
-                'direct_translate_mode': self.config.direct_translate_mode,
-                'translation_mode': getattr(self.config, 'translation_mode', 'glossary_reference'),
+                'ollama_host': self.project_settings.ollama.host if self.project_settings else 'localhost',
+                'ollama_port': self.project_settings.ollama.port if self.project_settings else 11434,
+                'ollama_model': self.project_settings.ollama.model if self.project_settings else 'gemma3:4b',
+                'case_sensitive_glossary': self.project_settings.case_sensitive_glossary if self.project_settings else True,
+                'direct_translate_mode': False,  # Deprecated field
+                'translation_mode': self.project_settings.translation_mode if self.project_settings else 'glossary_reference',
             })
 
             # Update UI
@@ -1122,7 +1130,8 @@ class MainWindow(QMainWindow):
 
             # Check Ollama connection, auto-start if needed
             if self.translation_engine.check_connection():
-                self.ollama_status.setText(f'Ollama: Connected ({self.config.ollama.model})')
+                model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
+                self.ollama_status.setText(f'Ollama: Connected ({model})')
                 self.ollama_status.setStyleSheet('color: green;')
                 # Check and download required models
                 self.ensure_required_models()
@@ -1131,7 +1140,8 @@ class MainWindow(QMainWindow):
                 self.ollama_status.setText('Ollama: Starting...')
                 self.ollama_status.setStyleSheet('color: orange;')
                 if self.auto_start_ollama():
-                    self.ollama_status.setText(f'Ollama: Connected ({self.config.ollama.model})')
+                    model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
+                    self.ollama_status.setText(f'Ollama: Connected ({model})')
                     self.ollama_status.setStyleSheet('color: green;')
                 else:
                     self.ollama_status.setText('Ollama: Disconnected')
@@ -1253,7 +1263,7 @@ class MainWindow(QMainWindow):
         self.model_combo.clear()
 
         models = self.translation_engine.provider.get_available_models()
-        current_model = self.config.ollama.model
+        current_model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
 
         for model in models:
             name = model['name']
@@ -1282,9 +1292,10 @@ class MainWindow(QMainWindow):
         if not model_name:
             return
 
-        # Update config
-        self.config.ollama.model = model_name
-        self.config.save()
+        # Update project settings
+        if self.project_settings:
+            self.project_settings.ollama.model = model_name
+            self.project_manager.save_project_settings()
 
         # Update translation engine
         if self.translation_engine:
@@ -1294,27 +1305,31 @@ class MainWindow(QMainWindow):
 
     def select_folder(self):
         """Open folder selection dialog"""
+        last_dir = self.project_settings.last_input_dir if self.project_settings else ''
         folder = QFileDialog.getExistingDirectory(
             self, 'Select Source Folder',
-            self.config.last_input_dir or str(Path.home())
+            last_dir or str(Path.home())
         )
         if folder:
             print(f'[UI] Folder selected: {folder}')
-            self.config.last_input_dir = folder
-            self.config.save()
-            print(f'[UI] Last input dir saved to config')
+            if self.project_settings:
+                self.project_settings.last_input_dir = folder
+                self.project_manager.save_project_settings()
+                print(f'[UI] Last input dir saved to project settings')
             self.load_folder(folder)
 
     def select_files(self):
         """Open file selection dialog"""
+        last_dir = self.project_settings.last_input_dir if self.project_settings else ''
         files, _ = QFileDialog.getOpenFileNames(
             self, 'Select HTML Files',
-            self.config.last_input_dir or str(Path.home()),
+            last_dir or str(Path.home()),
             'HTML Files (*.htm *.html)'
         )
         if files:
-            self.config.last_input_dir = str(Path(files[0]).parent)
-            self.config.save()
+            if self.project_settings:
+                self.project_settings.last_input_dir = str(Path(files[0]).parent)
+                self.project_manager.save_project_settings()
             self.load_files(files)
 
     def _has_translated_file(self, source_file_path: str) -> bool:
@@ -2259,8 +2274,9 @@ class MainWindow(QMainWindow):
         """Force translate files (used by right-click retranslate)"""
         target_lang = self.lang_combo.currentData()
         # Use base output directory - worker adds target_lang and file structure
-        if self.config.custom_output_root and self.config.custom_output_root.strip():
-            output_dir = self.config.custom_output_root
+        custom_root = self.project_settings.custom_output_root if self.project_settings else ''
+        if custom_root and custom_root.strip():
+            output_dir = custom_root
         else:
             app_dir = Path(__file__).parent.parent
             output_dir = str(app_dir / 'output')
@@ -2296,11 +2312,14 @@ class MainWindow(QMainWindow):
 
         # Start worker
         self.translation_engine.reset_stop()
-        print(f'[Translation] Starting with {self.config.worker_count} worker threads')
+        worker_count = self.project_settings.worker_count if self.project_settings else 3
+        include_lang_folder = self.project_settings.include_lang_code_folder if self.project_settings else True
+        include_parent_folder = self.project_settings.include_parent_folder if self.project_settings else True
+        print(f'[Translation] Starting with {worker_count} worker threads')
         self.worker = MultiThreadedTranslationWorker(
-            self.translation_engine, files, target_lang, output_dir, input_base, self.config.worker_count,
-            include_lang_folder=self.config.include_lang_code_folder,
-            include_parent_folder=self.config.include_parent_folder
+            self.translation_engine, files, target_lang, output_dir, input_base, worker_count,
+            include_lang_folder=include_lang_folder,
+            include_parent_folder=include_parent_folder
         )
         self.worker.progress.connect(self.on_translation_progress)
         self.worker.file_done.connect(self.on_file_translated)
@@ -2326,8 +2345,9 @@ class MainWindow(QMainWindow):
 
         # Get target language and output directory
         target_lang = self.lang_combo.currentData()
-        if self.config.custom_output_root and self.config.custom_output_root.strip():
-            output_dir = Path(self.config.custom_output_root)
+        custom_root = self.project_settings.custom_output_root if self.project_settings else ''
+        if custom_root and custom_root.strip():
+            output_dir = Path(custom_root)
         else:
             app_dir = Path(__file__).parent.parent
             output_dir = app_dir / 'output'
@@ -2397,8 +2417,9 @@ class MainWindow(QMainWindow):
 
         # Get target language and output directory
         target_lang = self.lang_combo.currentData()
-        if self.config.custom_output_root and self.config.custom_output_root.strip():
-            output_dir = Path(self.config.custom_output_root)
+        custom_root = self.project_settings.custom_output_root if self.project_settings else ''
+        if custom_root and custom_root.strip():
+            output_dir = Path(custom_root)
         else:
             app_dir = Path(__file__).parent.parent
             output_dir = app_dir / 'output'
@@ -2466,11 +2487,14 @@ class MainWindow(QMainWindow):
 
         # Start worker
         self.translation_engine.reset_stop()
-        print(f'[Translation] Starting with {self.config.worker_count} worker threads')
+        worker_count = self.project_settings.worker_count if self.project_settings else 3
+        include_lang_folder = self.project_settings.include_lang_code_folder if self.project_settings else True
+        include_parent_folder = self.project_settings.include_parent_folder if self.project_settings else True
+        print(f'[Translation] Starting with {worker_count} worker threads')
         self.worker = MultiThreadedTranslationWorker(
-            self.translation_engine, files, target_lang, output_dir, input_base, self.config.worker_count,
-            include_lang_folder=self.config.include_lang_code_folder,
-            include_parent_folder=self.config.include_parent_folder
+            self.translation_engine, files, target_lang, output_dir, input_base, worker_count,
+            include_lang_folder=include_lang_folder,
+            include_parent_folder=include_parent_folder
         )
         self.worker.progress.connect(self.on_translation_progress)
         self.worker.file_done.connect(self.on_file_translated)
@@ -2732,7 +2756,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 'Warning', 'Please select a glossary file first.')
             return
 
-        editor = GlossaryEditor(glossary_path, self, case_sensitive=self.config.case_sensitive_glossary)
+        case_sensitive = self.project_settings.case_sensitive_glossary if self.project_settings else True
+        editor = GlossaryEditor(glossary_path, self, case_sensitive=case_sensitive)
         editor.glossary_changed.connect(self.on_glossary_changed)
         editor.exec()
 
@@ -2802,8 +2827,9 @@ class MainWindow(QMainWindow):
     def on_case_sensitive_changed(self, state: int):
         """Handle case sensitivity toggle"""
         case_sensitive = state == 2  # Qt.Checked = 2
-        self.config.case_sensitive_glossary = case_sensitive
-        self.config.save()
+        if self.project_settings:
+            self.project_settings.case_sensitive_glossary = case_sensitive
+            self.project_manager.save_project_settings()
 
         if self.translation_engine:
             self.translation_engine.set_case_sensitive_glossary(case_sensitive)
@@ -2814,10 +2840,9 @@ class MainWindow(QMainWindow):
     def on_translation_mode_changed(self, _index: int):
         """Handle translation mode change"""
         mode = self.mode_combo.currentData()
-        self.config.translation_mode = mode
-        # Keep backward compatibility
-        self.config.direct_translate_mode = (mode == 'full_context')
-        self.config.save()
+        if self.project_settings:
+            self.project_settings.translation_mode = mode
+            self.project_manager.save_project_settings()
 
         if self.translation_engine:
             self.translation_engine.set_translation_mode(mode)
@@ -2828,16 +2853,18 @@ class MainWindow(QMainWindow):
     def on_auto_refresh_changed(self, state: int):
         """Handle auto-refresh preview toggle"""
         auto_refresh = state == 2  # Qt.Checked = 2
-        self.config.auto_refresh_preview = auto_refresh
-        self.config.save()
+        if self.project_settings:
+            self.project_settings.auto_refresh_preview = auto_refresh
+            self.project_manager.save_project_settings()
 
     def on_target_lang_changed(self, index: int):
         """Handle target language selection change"""
         target_lang = self.lang_combo.currentData()
         if target_lang:
             print(f'[Config] Target language changed to: {target_lang}')
-            self.config.target_lang = target_lang
-            self.config.save()
+            if self.project_settings:
+                self.project_settings.target_lang = target_lang
+                self.project_manager.save_project_settings()
             self.status_label.setText(f'Target language: {SUPPORTED_LANGUAGES.get(target_lang, target_lang)}')
             # Repopulate translated tree for new language
             self.populate_translated_tree()
@@ -2845,8 +2872,9 @@ class MainWindow(QMainWindow):
     def on_worker_count_changed(self, value: int):
         """Handle worker count change"""
         print(f'[Config] Worker count changed to: {value}')
-        self.config.worker_count = value
-        self.config.save()
+        if self.project_settings:
+            self.project_settings.worker_count = value
+            self.project_manager.save_project_settings()
         self.status_label.setText(f'Worker threads: {value}')
 
     def on_translated_text_changed(self):
@@ -3366,8 +3394,9 @@ class MainWindow(QMainWindow):
         root_layout = QVBoxLayout(root_group)
 
         # Show current custom root
-        if self.config.custom_output_root and self.config.custom_output_root.strip():
-            root_info = QLabel(f'Current: {self.config.custom_output_root}')
+        custom_root = self.project_settings.custom_output_root if self.project_settings else ''
+        if custom_root and custom_root.strip():
+            root_info = QLabel(f'Current: {custom_root}')
             root_info.setWordWrap(True)
             root_info.setStyleSheet('color: #2196F3; padding: 5px;')
         else:
@@ -3383,7 +3412,8 @@ class MainWindow(QMainWindow):
         select_root_btn = QPushButton('Select Folder...')
 
         def select_custom_root():
-            current = self.config.custom_output_root if self.config.custom_output_root else str(Path(__file__).parent.parent / 'output')
+            current_root = self.project_settings.custom_output_root if self.project_settings else ''
+            current = current_root if current_root else str(Path(__file__).parent.parent / 'output')
             selected_dir = QFileDialog.getExistingDirectory(
                 dialog,
                 'Select Custom Output Root Folder',
@@ -3391,8 +3421,9 @@ class MainWindow(QMainWindow):
                 QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
             )
             if selected_dir:
-                self.config.custom_output_root = selected_dir
-                self.config.save()
+                if self.project_settings:
+                    self.project_settings.custom_output_root = selected_dir
+                    self.project_manager.save_project_settings()
                 root_info.setText(f'Current: {selected_dir}')
                 root_info.setStyleSheet('color: #2196F3; padding: 5px;')
                 reset_root_btn.setEnabled(True)
@@ -3402,11 +3433,13 @@ class MainWindow(QMainWindow):
 
         # Reset button
         reset_root_btn = QPushButton('Reset to Default')
-        reset_root_btn.setEnabled(bool(self.config.custom_output_root and self.config.custom_output_root.strip()))
+        current_root = self.project_settings.custom_output_root if self.project_settings else ''
+        reset_root_btn.setEnabled(bool(current_root and current_root.strip()))
 
         def reset_custom_root():
-            self.config.custom_output_root = ''
-            self.config.save()
+            if self.project_settings:
+                self.project_settings.custom_output_root = ''
+                self.project_manager.save_project_settings()
             root_info.setText('Using default output folder')
             root_info.setStyleSheet('color: #666; padding: 5px;')
             reset_root_btn.setEnabled(False)
@@ -3425,7 +3458,7 @@ class MainWindow(QMainWindow):
 
         # Include parent folder checkbox
         parent_folder_check = QCheckBox('Include Parent Folder')
-        parent_folder_check.setChecked(self.config.include_parent_folder)
+        parent_folder_check.setChecked(self.project_settings.include_parent_folder if self.project_settings else True)
         parent_folder_check.setToolTip(
             'When enabled: {root}/{lang_code}/{parent_folder}/file.html\n'
             'When disabled: {root}/{lang_code}/file.html'
@@ -3434,7 +3467,7 @@ class MainWindow(QMainWindow):
 
         # Include language code folder checkbox
         lang_folder_check = QCheckBox('Include Language Code Folder')
-        lang_folder_check.setChecked(self.config.include_lang_code_folder)
+        lang_folder_check.setChecked(self.project_settings.include_lang_code_folder if self.project_settings else True)
         lang_folder_check.setToolTip(
             'When enabled: {root}/{lang_code}/{parent_folder}/file.html\n'
             'When disabled: {root}/{parent_folder}/file.html'
@@ -3452,9 +3485,10 @@ class MainWindow(QMainWindow):
         # Show dialog
         if dialog.exec() == QDialog.Accepted:
             # Save settings
-            self.config.include_parent_folder = parent_folder_check.isChecked()
-            self.config.include_lang_code_folder = lang_folder_check.isChecked()
-            self.config.save()
+            if self.project_settings:
+                self.project_settings.include_parent_folder = parent_folder_check.isChecked()
+                self.project_settings.include_lang_code_folder = lang_folder_check.isChecked()
+                self.project_manager.save_project_settings()
 
             self.status_label.setText('Output settings saved')
 

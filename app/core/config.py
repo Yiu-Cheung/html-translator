@@ -24,14 +24,7 @@ class OllamaConfig:
 
 @dataclass
 class AppConfig:
-    """Main application configuration"""
-    # Ollama settings
-    ollama: OllamaConfig = field(default_factory=OllamaConfig)
-
-    # Default languages
-    source_lang: str = 'en'
-    target_lang: str = 'zh-TW'
-
+    """Main application configuration - UI and global settings only"""
     # UI settings
     window_width: int = 1400
     window_height: int = 900
@@ -41,23 +34,9 @@ class AppConfig:
     app_dir: str = ''
     projects_dir: str = ''
     last_project: str = 'default'
-    last_input_dir: str = ''
-    last_output_dir: str = ''
 
     # Recent projects
     recent_projects: list = field(default_factory=list)
-
-    # Translation options
-    case_sensitive_glossary: bool = True  # Match glossary terms with exact case
-    translation_mode: str = 'glossary_reference'  # Translation mode: 'glossary_reference', 'glossary_placeholder', or 'full_context'
-    direct_translate_mode: bool = False  # Deprecated: kept for backward compatibility
-    auto_refresh_preview: bool = True  # Auto-refresh preview during translation
-    worker_count: int = 3  # Number of parallel translation workers (1-10)
-
-    # Output folder settings
-    include_parent_folder: bool = True  # Include source parent folder name in output path
-    include_lang_code_folder: bool = True  # Include language code folder in output path
-    custom_output_root: str = ''  # Custom output root folder (empty = use default 'output' folder)
 
     def __post_init__(self):
         # Always compute app_dir relative to this file (cross-platform)
@@ -72,11 +51,6 @@ class AppConfig:
         if not self.projects_dir or not Path(self.projects_dir).exists():
             self.projects_dir = computed_projects_dir
 
-        # Validate custom_output_root - clear if invalid path
-        if self.custom_output_root and not Path(self.custom_output_root).exists():
-            print(f'[Config] Custom output root not found, resetting: {self.custom_output_root}')
-            self.custom_output_root = ''
-
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> 'AppConfig':
         """Load configuration from JSON file"""
@@ -90,17 +64,24 @@ class AppConfig:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
-                # Handle nested OllamaConfig
-                ollama_data = data.pop('ollama', {})
-                ollama_config = OllamaConfig(**ollama_data)
+                # Remove project-specific fields that have been moved to ProjectSettings
+                # These are now handled per-project
+                removed_fields = [
+                    'ollama', 'source_lang', 'target_lang',
+                    'case_sensitive_glossary', 'translation_mode', 'direct_translate_mode',
+                    'auto_refresh_preview', 'worker_count',
+                    'include_parent_folder', 'include_lang_code_folder', 'custom_output_root',
+                    'last_input_dir', 'last_output_dir'
+                ]
+                for field in removed_fields:
+                    data.pop(field, None)
 
                 # Remove platform-specific paths - will be recomputed in __post_init__
                 data.pop('app_dir', None)
                 data.pop('projects_dir', None)
 
-                config = cls(ollama=ollama_config, **data)
+                config = cls(**data)
                 print(f'[Config] Loaded from {config_path}')
-                print(f'[Config] Target language: {config.target_lang}')
                 return config
             except Exception as e:
                 print(f'[Config] Failed to load config: {e}')
