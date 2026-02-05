@@ -1180,6 +1180,14 @@ class MainWindow(QMainWindow):
                 # Update UI status
                 self.ollama_status.setText(f'Ollama: Connected ({new_model})')
                 self.ollama_status.setStyleSheet('color: green;')
+
+                # Update model dropdown to show current model
+                self.model_combo.blockSignals(True)
+                for i in range(self.model_combo.count()):
+                    if self.model_combo.itemData(i) == new_model:
+                        self.model_combo.setCurrentIndex(i)
+                        break
+                self.model_combo.blockSignals(False)
             else:
                 # Nothing changed - just update project-specific config
                 print(f'[UI] Ollama settings unchanged, fast switch')
@@ -1188,6 +1196,15 @@ class MainWindow(QMainWindow):
                     self.translation_engine.config['project_name'] = project_name
                     self.translation_engine.config['case_sensitive_glossary'] = self.project_settings.case_sensitive_glossary if self.project_settings else True
                     self.translation_engine.config['translation_mode'] = self.project_settings.translation_mode if self.project_settings else 'glossary_reference'
+
+                    # Ensure model dropdown shows correct model (in case it was manually changed)
+                    current_model = self.project_settings.ollama.model if self.project_settings else 'gemma3:4b'
+                    self.model_combo.blockSignals(True)
+                    for i in range(self.model_combo.count()):
+                        if self.model_combo.itemData(i) == current_model:
+                            self.model_combo.setCurrentIndex(i)
+                            break
+                    self.model_combo.blockSignals(False)
 
             # Update UI
             glossary_count = self.current_project.statistics.glossary_terms
